@@ -23,8 +23,9 @@ class TapTempo(guy.Guy):
 
     def tap(self):
         self.t.append( datetime.datetime.now() )
-        ll=[ (j-i).microseconds for i, j in zip(self.t[:-1], self.t[1:]) ][-5:]
-        if ll:
+        if ll := [(j - i).microseconds for i, j in zip(self.t[:-1], self.t[1:])][
+            -5:
+        ]:
             return int(60000000*len(ll)/sum(ll))
 
 if __name__ == "__main__":

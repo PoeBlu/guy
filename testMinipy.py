@@ -30,9 +30,9 @@ document.querySelector("#n").focus()
 
     def post(self,txt):
         try:
-           return eval(txt, globals(), locals())
+            return eval(txt, globals(), locals())
         except Exception as e:
-           return "error:%s"%e
+            return f"error:{e}"
 
 
 if __name__ == "__main__":

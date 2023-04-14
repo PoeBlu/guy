@@ -46,7 +46,7 @@ body {background: #EEE}
         for i in range(101):
             await asyncio.sleep(speed)    # simulate the job
             await self.emitMe("percent",pb,i)
-        return "Job Done %s!" % pb
+        return f"Job Done {pb}!"
 
 
 if __name__=="__main__":

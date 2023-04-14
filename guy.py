@@ -50,27 +50,25 @@ ISANDROID = "android" in sys.executable
 LOG=None
 FOLDERSTATIC="static"
 
-GETPATH=os.getcwd
-if hasattr(sys, "_MEIPASS"):  # when freezed with pyinstaller ;-)
-    GETPATH=lambda: sys._MEIPASS
+GETPATH = (lambda: sys._MEIPASS) if hasattr(sys, "_MEIPASS") else os.getcwd
 
 def isFree(ip, port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(1)
-    return not (s.connect_ex((ip,port)) == 0)
+    return s.connect_ex((ip,port)) != 0
 
 #=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#
 https={}
 def http(regex): # decorator
     if not regex.startswith("/"): raise Exception("http decoraton, path regex should start with '/'")
     def _(method):
-        https["^"+regex[1:]+"$"] = method
+        https[f"^{regex[1:]}$"] = method
+
     return _
 
 async def callhttp(web,path): # web: RequestHandler
     for name,method in https.items():
-        g=re.match(name,path)
-        if g:
+        if g := re.match(name, path):
             if asyncio.iscoroutinefunction( method ):
                 ret=await method(web,*g.groups())
             else:
@@ -90,16 +88,13 @@ def serialize(obj):
     def toJSDate(d):
         assert type(d) in [datetime, date]
         d = datetime(d.year, d.month, d.day, 0, 0, 0, 0) if type(d) == date else d
-        return d.isoformat() + "Z"
+        return f"{d.isoformat()}Z"
 
     if isinstance(obj, (datetime, date)):
         return toJSDate(obj)
     if isinstance(obj, bytes):
         return str(obj, "utf8")
-    if hasattr(obj, "__dict__"):
-        return obj.__dict__
-    else:
-        return str(obj)
+    return obj.__dict__ if hasattr(obj, "__dict__") else str(obj)
 
 
 def unserialize(obj):
@@ -155,7 +150,7 @@ class GuyJSHandler(tornado.web.RequestHandler):
     def initialize(self, instance):
         self.instance=instance
     async def get(self,page=""):
-        if page==self.instance._name or page=="":
+        if page in [self.instance._name, ""]:
             log("GuyJSHandler: Render Main guy.js",self.instance._name)
             self.write(self.instance._renderJs())
         else:
@@ -171,20 +166,21 @@ class MainHandler(tornado.web.RequestHandler):
         self.instance=instance
     async def get(self,page): # page doesn't contains a dot '.'
         #####################################################
-        if not await callhttp(self,page):
+        if await callhttp(self,page):
+            return
         #####################################################
-            if page=="" or page==self.instance._name:
-                log("MainHandler: Render Main Instance",self.instance._name)
-                self.render(self.instance)
+        if page in ["", self.instance._name]:
+            log("MainHandler: Render Main Instance",self.instance._name)
+            self.render(self.instance)
+        else:
+            chpage=self.instance._children.get(page,None)
+            if chpage is None:
+                chpage=self.instanciate(page)
+            if chpage:
+                log("MainHandler: Render Children",page)
+                self.render(chpage)
             else:
-                chpage=self.instance._children.get(page,None)
-                if chpage is None:
-                    chpage=self.instanciate(page)
-                if chpage:
-                    log("MainHandler: Render Children",page)
-                    self.render(chpage)
-                else:
-                    raise tornado.web.HTTPError(status_code=404)
+                raise tornado.web.HTTPError(status_code=404)
 
     async def post(self,page): # page doesn't contains a dot '.'
         await self._callhttp(page)
@@ -201,8 +197,7 @@ class MainHandler(tornado.web.RequestHandler):
     
     def instanciate(self,page,*a,**k):
         declared = {cls.__name__:cls for cls in Guy.__subclasses__()}
-        gclass=declared.get(page,None)
-        if gclass: # auto instanciate !
+        if gclass := declared.get(page, None):
             log("MainHandler: Auto instanciate",page)
             self.instance._children[page]=gclass(*a,**k)
             return self.instance._children[page]
@@ -232,7 +227,7 @@ class ProxyHandler(tornado.web.RequestHandler):
     async def _do(self,method,body,qargs):
         url = qargs.get('url')
         if self.request.query:
-            url = url + "?" + self.request.query
+            url = f"{url}?{self.request.query}"
         headers = {k[4:]: v for k, v in self.request.headers.items() if k.lower().startswith("set-")}
 
         http_client = tornado.httpclient.AsyncHTTPClient()
@@ -294,7 +289,7 @@ class WebSocketHandler(tornado.websocket.WebSocketHandler):
             await emit( event, *args )
         else:
             async def execution(function, uuid,mode):
-                log("Execute (%s)"%mode,method,args)
+                log(f"Execute ({mode})", method, args)
                 try:
                     ret = await function()
                     ##############################################################
@@ -312,7 +307,7 @@ class WebSocketHandler(tornado.websocket.WebSocketHandler):
                     print("=" * 40, "in ", method, mode)
                     print(traceback.format_exc().strip())
                     print("=" * 40)
-                log(">>> (%s)"%mode,r)
+                log(f">>> ({mode})", r)
                 await sockwrite(self,**r)
 
             fct=instance._getRoutage(method)
@@ -387,7 +382,7 @@ class WebServer(Thread): # the webserver is ran on a separated thread
 
     @property
     def startPage(self):
-        return "http://localhost:%s/#%s" % (self.port,self.instance._name) #anchor is important ! (to uniqify ressource in webbrowser)
+        return f"http://localhost:{self.port}/#{self.instance._name}"
 
 
 class ChromeApp:
@@ -424,7 +419,7 @@ class ChromeApp:
                     exe = None
 
         if exe:
-            args = [exe, "--app=" + url] + chromeArgs
+            args = [exe, f"--app={url}"] + chromeArgs
             if size == FULLSCREEN:
                 args.append("--start-fullscreen")
             if tempfile.gettempdir():
@@ -467,8 +462,8 @@ class ChromeAppCef:
             sys.excepthook = cef.ExceptHook
 
             settings = {
-                "product_version": "Wuy/%s" % __version__,
-                "user_agent": "Wuy/%s (%s)" % (__version__, platform.system()),
+                "product_version": f"Wuy/{__version__}",
+                "user_agent": f"Wuy/{__version__} ({platform.system()})",
                 "context_menu": dict(
                     enabled=True,
                     navigation=False,
@@ -501,20 +496,19 @@ class ChromeAppCef:
             b.SetJavascriptBindings(bindings)
 
             b.ExecuteJavascript("wuyInit(window.screen.width,window.screen.height)")
-            # ===---
-
             class WuyClientHandler(object):
                 def OnLoadEnd(self, browser, **_):
                     pass  # could serve in the future (?)
+
+
 
             class WuyDisplayHandler(object):
                 def OnTitleChange(self, browser, title):
                     try:
                         cef.WindowUtils.SetTitle(browser, title)
                     except AttributeError:
-                        print(
-                            "**WARNING** : title changed '%s' not work on linux" % title
-                        )
+                        print(f"**WARNING** : title changed '{title}' not work on linux")
+
 
             b.SetClientHandler(WuyClientHandler())
             b.SetClientHandler(WuyDisplayHandler())
@@ -539,16 +533,18 @@ class Guy:
     size=None
     def __init__(self,*a,**k):
         self._name = self.__class__.__name__
-        self._id=self._name+"-"+uuid.uuid4().hex
+        self._id = f"{self._name}-{uuid.uuid4().hex}"
         self.callbackExit=None      #public callback when "exit"
 
         self._routes={}
         for n, v in inspect.getmembers(self, inspect.ismethod):
-            if not v.__func__.__qualname__.startswith("Guy."):
-                if n not in ["init","__init__"]:
-                    if n!="_render":
-                        if n in dir(Guy): raise Exception("Can't set route '%s' (existing keyword))"%n)
-                    self._routes[n]=v
+            if not v.__func__.__qualname__.startswith("Guy.") and n not in [
+                "init",
+                "__init__",
+            ]:
+                if n != "_render" and n in dir(Guy):
+                    raise Exception(f"Can't set route '{n}' (existing keyword))")
+                self._routes[n]=v
 
         # guy's inner routes
         self._routes["cfg_get"]=self.cfg_get
@@ -563,11 +559,7 @@ class Guy:
         new = copy.copy(self)
         for n, v in inspect.getmembers(new):
             if n in keys:
-                if inspect.isfunction(v):
-                    new._routes[n]=types.MethodType( v, new ) #rebound !
-                else:
-                    new._routes[n]=v
-
+                new._routes[n] = types.MethodType( v, new ) if inspect.isfunction(v) else v
         new._wsock = wsock
         self._runned = new
 
@@ -686,13 +678,10 @@ class Guy:
 
 
     def _renderJs(self,asChild=False):
-        if self.size and self.size is not FULLSCREEN:
-            size=self.size
-        else:
-            size=None
+        size = self.size if self.size and self.size is not FULLSCREEN else None
         routes=[k for k,v in self._routes.items() if not v.__func__.__qualname__.startswith("Guy.")]
         log("ROUTES:",routes)
-        js = """
+        return """
 document.addEventListener("DOMContentLoaded", function(event) {
     %s
     %s
@@ -887,13 +876,17 @@ var self= {
 
 
 """ % (
-        size and "window.resizeTo(%s,%s);" % (size[0], size[1]) or "",
-        'if(!document.title) document.title="%s";' % self._name,
-        "true" if LOG else "false",
-        "\n".join(["""\n%s:function(_) {return guy._call("%s", Array.prototype.slice.call(arguments) )},""" % (k, asChild and self._id+"."+k or k) for k in routes])
-    )
-
-        return js
+            size and f"window.resizeTo({size[0]},{size[1]});" or "",
+            f'if(!document.title) document.title="{self._name}";',
+            "true" if LOG else "false",
+            "\n".join(
+                [
+                    """\n%s:function(_) {return guy._call("%s", Array.prototype.slice.call(arguments) )},"""
+                    % (k, asChild and f"{self._id}.{k}" or k)
+                    for k in routes
+                ]
+            ),
+        )
 
     async def emit(self, event, *args):
         await emit(event, *args)
@@ -928,11 +921,12 @@ var self= {
 
             routes=[k for k in o._routes.keys() if not k.startswith("_")]
 
-            eventExit="event-"+o._id+".exit"
+            eventExit = f"event-{o._id}.exit"
             def exit():
-                log("USE %s: EXIT" % o._name,o._json)
+                log(f"USE {o._name}: EXIT", o._json)
                 # asyncio.create_task(self.emitMe(eventExit,o._json)) #  py37
                 asyncio.ensure_future(self.emitMe(eventExit,o._json)) # py35
+
 
 
             html=o._render(GETPATH(),includeGuyJs=False)
@@ -951,7 +945,7 @@ var self= {
                 script="guy._instanciateWindow(x.result)"
             )
             return obj
-            ################################################################
+                ################################################################
 
         return ret
 
@@ -965,28 +959,30 @@ var self= {
                 var = rep[2:-2]
                 if var in d:
                     o=d[var]
-                    if type(o)==str:
-                        x=x.replace(rep, o)
-                    else:
-                        x=x.replace(rep, jDumps( o ))
+                    x = x.replace(rep, o) if type(o)==str else x.replace(rep, jDumps( o ))
             return x
 
         def repgjs(x,page):
-          return re.sub('''src *= *(?P<quote>["'])[^(?P=quote)]*guy\\.js[^(?P=quote)]*(?P=quote)''','src="/%s/guy.js"'%page,x)
+            return re.sub(
+                '''src *= *(?P<quote>["'])[^(?P=quote)]*guy\\.js[^(?P=quote)]*(?P=quote)''',
+                f'src="/{page}/guy.js"',
+                x,
+            )
 
         if html:
-            if includeGuyJs: html=("""<script src="guy.js"></script>""")+ html
+            if includeGuyJs:
+                html = f"""<script src="guy.js"></script>{html}"""
             html=repgjs(html,self._name)
             return rep(html)
         else:
-            f=os.path.join(path,FOLDERSTATIC,"%s.html" % self._name)
+            f = os.path.join(path, FOLDERSTATIC, f"{self._name}.html")
             if os.path.isfile(f):
                 with open(f,"r") as fid:
                     b=fid.read()
                     b=repgjs(b,self._name)
                     return rep(b)
             else:
-                return "ERROR: can't find '%s'" % f
+                return f"ERROR: can't find '{f}'"
 
     @property
     def _dict(self):
@@ -1062,9 +1058,4 @@ def runAndroid(ga):
 
 
 
-if __name__ == "__main__":
-    #~ from testTordu import Tordu as GuyApp
-    # from testPrompt import Win as GuyApp
-    # GuyApp().run()
-    pass
 
